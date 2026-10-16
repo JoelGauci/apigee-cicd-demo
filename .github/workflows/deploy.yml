@@ -182,15 +182,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Test Dependencies
-        run: |
-          cd test
-          npm install
-
       - name: Run Apickli BDD Integration Tests
         env:
           APIGEE_HOSTNAME: ${{ env.APIGEE_HOSTNAME }}
           DEMO_SECRET: ${{ steps.fetch_secret.outputs.secret_value }}
         run: |
           cd test
+          rm -f package-lock.json
+          npm install --registry=https://registry.npmjs.org/
           npm test
