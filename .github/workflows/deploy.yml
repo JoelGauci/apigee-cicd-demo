@@ -7,6 +7,7 @@ on:
     paths:
       - 'apiproxy/**'
       - '.github/workflows/**'
+      - 'scripts/**'
   workflow_dispatch:
 
 permissions:
@@ -14,9 +15,13 @@ permissions:
   id-token: write
 
 env:
+  GCP_PROJECT: apigee-x-jog
   APIGEE_ORG: apigee-x-jog
   APIGEE_ENV: prod
   PROXY_NAME: apigee-cicd-v1
+  KVM_NAME: apigee_secrets
+  KVM_KEY: secret_demo
+  SECRET_NAME: secret_demo
   WIF_PROVIDER: projects/1014194238001/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   WIF_SERVICE_ACCOUNT: apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com
 
@@ -35,6 +40,68 @@ jobs:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
           token_format: 'access_token'
+
+      - name: Fetch Secret from Secret Manager
+        id: fetch_secret
+        run: |
+          echo "Fetching secret '${SECRET_NAME}' from GCP Secret Manager..."
+          SECRET_VALUE=$(gcloud secrets versions access latest \
+            --secret="${SECRET_NAME}" \
+            --project="${GCP_PROJECT}")
+
+          # Mask the secret value to prevent accidental disclosure in runner logs
+          echo "::add-mask::${SECRET_VALUE}"
+
+          echo "secret_value=${SECRET_VALUE}" >> "$GITHUB_OUTPUT"
+          echo "Secret fetched successfully from GCP Secret Manager."
+
+      - name: Synchronize Apigee KVM & Secret Entry
+        run: |
+          ACCESS_TOKEN="${{ steps.auth.outputs.access_token }}"
+          SECRET_VAL="${{ steps.fetch_secret.outputs.secret_value }}"
+
+          echo "Checking if KVM '${KVM_NAME}' exists in environment '${APIGEE_ENV}'..."
+          KVM_HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" -X GET \
+            "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps/${KVM_NAME}" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}")
+
+          if [ "${KVM_HTTP_CODE}" -eq 404 ]; then
+            echo "KVM '${KVM_NAME}' not found (HTTP 404). Creating encrypted KVM..."
+            CREATE_KVM_RES=$(curl --silent --show-error --fail-with-body -X POST \
+              "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${KVM_NAME}\", \"encrypted\": true}")
+            echo "KVM created: ${CREATE_KVM_RES}"
+          elif [ "${KVM_HTTP_CODE}" -eq 200 ]; then
+            echo "KVM '${KVM_NAME}' already exists."
+          else
+            echo "Unexpected HTTP status checking KVM: ${KVM_HTTP_CODE}"
+            exit 1
+          fi
+
+          echo "Checking if key '${KVM_KEY}' exists in KVM '${KVM_NAME}'..."
+          ENTRY_HTTP_CODE=$(curl --silent -o /dev/null -w "%{http_code}" -X GET \
+            "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps/${KVM_NAME}/entries/${KVM_KEY}" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}")
+
+          if [ "${ENTRY_HTTP_CODE}" -eq 200 ]; then
+            echo "KVM entry '${KVM_KEY}' exists. Updating entry value..."
+            curl --silent --show-error --fail-with-body -X PUT \
+              "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps/${KVM_NAME}/entries/${KVM_KEY}" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${KVM_KEY}\", \"value\": \"${SECRET_VAL}\"}"
+            echo "KVM entry '${KVM_KEY}' updated successfully."
+          else
+            echo "KVM entry '${KVM_KEY}' does not exist (HTTP ${ENTRY_HTTP_CODE}). Creating new entry..."
+            curl --silent --show-error --fail-with-body -X POST \
+              "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps/${KVM_NAME}/entries" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\": \"${KVM_KEY}\", \"value\": \"${SECRET_VAL}\"}"
+            echo "KVM entry '${KVM_KEY}' created successfully."
+          fi
 
       - name: Package API Proxy Bundle
         run: |

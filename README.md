@@ -7,17 +7,21 @@ This project demonstrates an automated CI/CD pipeline for deploying Apigee X API
 ## Architecture & Workflow Overview
 
 ```mermaid
-flowchart LR
+flowchart TD
     Dev[Developer] -->|Push code to main| GitHub[GitHub Repository]
     subgraph CI/CD [GitHub Actions Pipeline]
-        Auth[Authenticate to GCP via WIF]
-        Package[Package apiproxy bundle]
-        Import[Import API Proxy Revision]
-        Deploy[Deploy Revision to Environment]
-        Wait[Wait until State is READY]
+        Auth[1. Authenticate via Workload Identity Federation]
+        FetchSecret[2. Fetch Secret from GCP Secret Manager]
+        SyncKVM[3. Check & Synchronize Apigee KVM & Key Entry]
+        Package[4. Package apiproxy bundle]
+        Import[5. Import API Proxy Revision]
+        Deploy[6. Deploy Revision to Environment]
+        Wait[7. Wait until State is READY]
     end
     GitHub --> CI/CD
+    CI/CD -->|gcloud secrets versions access| GSM[(GCP Secret Manager)]
     CI/CD -->|Apigee Management API| Apigee[(Apigee X Org: apigee-x-jog / Env: prod)]
+    Apigee -->|Runtime KVM Read| Proxy[API Proxy: apigee-cicd-v1]
 ```
 
 ---
@@ -28,7 +32,7 @@ flowchart LR
 | :--- | :---: | :--- |
 | **Step 0** | **Completed** | Project workspace initialization & documentation baseline |
 | **Step 1** | **Completed** | GitHub Actions pipeline for Apigee API proxy deployment on push (using WIF) |
-| **Step 2** | *Pending* | Secret Manager provisioning script & KVM synchronization (`apigee_secrets` / `secret_demo`) |
+| **Step 2** | **Completed** | Secret Manager provisioning script & KVM synchronization (`apigee_secrets` / `secret_demo`) |
 | **Step 3** | *Pending* | Apickli BDD integration test suite setup |
 | **Step 4** | *Pending* | Integration of BDD tests into the CI/CD pipeline |
 | **Step 5** | *Pending* | End-to-end execution, validation, and final wrap-up |
@@ -41,7 +45,7 @@ flowchart LR
 apigee-cicd-demo/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml      # CI/CD deployment pipeline for Apigee X (Workload Identity Federation)
+│       └── deploy.yml      # CI/CD deployment pipeline with Secret Manager & KVM sync
 ├── apiproxy/               # Apigee API Proxy source code (apigee-cicd-v1)
 │   ├── apigee-cicd-v1.xml
 │   ├── policies/
@@ -50,7 +54,8 @@ apigee-cicd-demo/
 │   │   └── default.xml
 │   └── targets/
 │       └── default.xml
-├── scripts/                # Utility scripts (Secret Manager setup, etc.)
+├── scripts/
+│   └── create_secret.sh    # Shell script to create GCP secret and grant CI/CD access
 ├── tests/                  # Apickli BDD test suite
 └── README.md               # Project documentation
 ```
@@ -77,63 +82,73 @@ sequenceDiagram
     participant GHOIDC as GitHub OIDC Token Service
     participant GCPSTS as GCP Security Token Service (STS)
     participant GCPIAM as GCP IAM Service Account
+    participant GSM as GCP Secret Manager
     participant Apigee as Apigee X Management API
 
-    GHA->>GHOIDC: 1. Request signed OIDC JWT token (with repo & actor claims)
+    GHA->>GHOIDC: 1. Request signed OIDC JWT token (repo & actor claims)
     GHOIDC-->>GHA: 2. Return short-lived GitHub JWT token
     GHA->>GCPSTS: 3. Exchange JWT token with WIF Provider
-    Note over GCPSTS: Validates signature against token.actions.githubusercontent.com<br/>Checks assertion.repository == 'JoelGauci/apigee-cicd-demo'
-    GCPSTS-->>GHA: 4. Return federated federated STS token
+    Note over GCPSTS: Validates against token.actions.githubusercontent.com<br/>Checks assertion.repository == 'JoelGauci/apigee-cicd-demo'
+    GCPSTS-->>GHA: 4. Return federated STS token
     GHA->>GCPIAM: 5. Impersonate apigee-deployer-sa using STS token
-    GCPIAM-->>GHA: 6. Return short-lived Google OAuth2 Access Token (valid <= 1h)
-    GHA->>Apigee: 7. Deploy API Proxy using OAuth2 Access Token
+    GCPIAM-->>GHA: 6. Return short-lived Google OAuth2 Access Token
+    GHA->>GSM: 7. Access secret version (secret_demo)
+    GHA->>Apigee: 8. Sync KVM entry (apigee_secrets / secret_demo) & Deploy proxy
 ```
 
 ### Security Benefits of WIF
 
-1. **Keyless Authentication (Zero Secrets)**
-   - No sensitive JSON credentials are created, downloaded, or persisted in GitHub repository secrets or local filesystems.
-   - Eliminates secret management overhead, rotation lifecycles, and risk of accidental git commits.
-
-2. **Strict Attribute Mapping & Scoping**
-   - The Workload Identity Provider enforces attribute conditions:
-     ```text
-     assertion.repository == 'JoelGauci/apigee-cicd-demo'
-     ```
-   - Only jobs executed within this exact GitHub repository can exchange tokens. Forks, unauthorized branches, or external repositories cannot impersonate the service account.
-
-3. **Short-Lived Ephemeral Tokens**
-   - Tokens issued by GCP STS are temporary access tokens valid only for the duration of the deployment step (typically 1 hour or less).
-   - In the event of a runner memory capture, the token quickly expires, severely limiting the blast radius.
-
-4. **Enhanced Auditability & Compliance**
-   - Every deployment request recorded in Google Cloud Audit Logs contains metadata from the GitHub OIDC assertion (e.g. `workflow`, `actor`, `ref`, and `repository`).
-   - Fully satisfies CIS Google Cloud Platform Benchmarks and enterprise Zero Trust security policies (`constraints/iam.disableServiceAccountKeyCreation`).
+1. **Keyless Authentication (Zero Secrets)**: No static credentials stored in GitHub Secrets or disk.
+2. **Strict Attribute Mapping & Scoping**: Only repository `JoelGauci/apigee-cicd-demo` can authenticate.
+3. **Short-Lived Ephemeral Tokens**: Temporary tokens valid $\le$ 1 hour minimize the attack surface.
+4. **Enhanced Auditability & Compliance**: Full traceability in Google Cloud Audit Logs.
 
 ---
 
-## Setup & GitHub Integration Guide (Step 1)
+## Step 2: Secret Manager & KVM Synchronization
 
-### 1. Workload Identity Federation (WIF) Configuration Details
+### 1. Provision Secret in GCP Secret Manager
 
-- **GCP Project**: `apigee-x-jog` (Project Number: `1014194238001`)
-- **Service Account**: `apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com`
-- **WIF Pool**: `github-pool`
-- **WIF Provider**: `projects/1014194238001/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
+Run the helper script [`scripts/create_secret.sh`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/scripts/create_secret.sh) from your local terminal:
 
-Required IAM roles configured on `apigee-deployer-sa`:
-- `roles/apigee.admin` (Apigee management and deployment privileges)
-- `roles/iam.workloadIdentityUser` bound to `principalSet://.../attribute.repository/JoelGauci/apigee-cicd-demo`
-
-### 2. Workflow Trigger & Push
-
-The workflow is located in [`.github/workflows/deploy.yml`](file://.github/workflows/deploy.yml).
-
-To push and run the pipeline:
 ```bash
-git add .github/ .gitignore README.md
-git commit -m "docs: document Workload Identity Federation and security hardening"
-git push origin main
+# Basic usage (uses default secret name 'secret_demo')
+./scripts/create_secret.sh
+
+# Or specify custom secret name and value:
+./scripts/create_secret.sh "secret_demo" "MySecureSecretValue2026!"
 ```
 
-The pipeline will automatically authenticate keylessly via WIF, package the `apiproxy` bundle, import the revision into Apigee X, and deploy it to the `prod` environment.
+The script performs the following actions:
+1. Enables the `secretmanager.googleapis.com` API if not yet enabled.
+2. Creates the secret `secret_demo` with automatic replication.
+3. Adds a new version containing the secret value.
+4. Grants `roles/secretmanager.secretAccessor` on the secret to the Service Account `apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com`.
+
+### 2. CI/CD Pipeline KVM Synchronization
+
+During each CI/CD execution:
+1. **Secret Retrieval**: The pipeline fetches the latest version of `secret_demo` from Secret Manager using `gcloud secrets versions access`.
+2. **Log Masking**: The value is registered with `::add-mask::` so that it will never appear in GitHub Actions console logs.
+3. **KVM Creation**: The pipeline queries `GET /v1/organizations/apigee-x-jog/environments/prod/keyvaluemaps/apigee_secrets`. If it does not exist (HTTP 404), it creates the encrypted KVM.
+4. **Key Entry Upsert**: The pipeline queries `GET .../keyvaluemaps/apigee_secrets/entries/secret_demo`. If present, it sends a `PUT` request to update the value; if absent, it sends a `POST` request to create the entry.
+5. **Proxy Execution**: At runtime, the policy [`KVM-GetSecret.xml`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/apiproxy/policies/KVM-GetSecret.xml) retrieves the value from `apigee_secrets` under key `secret_demo` and populates `private.flow.secret`.
+
+---
+
+## How to Test and Deploy Step 2
+
+1. Execute the secret creation script locally:
+   ```bash
+   ./scripts/create_secret.sh secret_demo "MySuperSecretValue123!"
+   ```
+2. Commit and push the changes:
+   ```bash
+   git add scripts/create_secret.sh .github/workflows/deploy.yml README.md
+   git commit -m "feat: add Secret Manager script and KVM sync to CI/CD pipeline"
+   git push origin main
+   ```
+3. Watch the workflow execution in GitHub Actions:
+   - Check the `Fetch Secret from Secret Manager` step output.
+   - Check the `Synchronize Apigee KVM & Secret Entry` step output.
+   - Confirm proxy deployment.
