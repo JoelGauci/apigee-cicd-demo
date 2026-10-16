@@ -1,0 +1,20 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Apigee bundles & zips
+*.zip
+
+# Credentials & Keys
+*-key.json
+sa-key.json
+*.pem
+
+# Environment & OS
+.DS_Store
+*.env
+.env.*
+*.swp
+*~

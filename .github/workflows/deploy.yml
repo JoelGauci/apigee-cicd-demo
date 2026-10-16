@@ -1,0 +1,109 @@
+name: Deploy Apigee Proxy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apiproxy/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  APIGEE_ORG: apigee-x-jog
+  APIGEE_ENV: prod
+  PROXY_NAME: apigee-cicd-v1
+  WIF_PROVIDER: projects/1014194238001/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  WIF_SERVICE_ACCOUNT: apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    name: Deploy to Apigee X
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+          token_format: 'access_token'
+
+      - name: Package API Proxy Bundle
+        run: |
+          echo "Packaging apiproxy bundle..."
+          zip -r apiproxy.zip apiproxy -x "*.DS_Store" -x "*__MACOSX*"
+          echo "Bundle contents:"
+          unzip -l apiproxy.zip
+
+      - name: Import API Proxy Bundle
+        id: import_proxy
+        run: |
+          echo "Importing proxy ${PROXY_NAME} to organization ${APIGEE_ORG}..."
+          RESPONSE=$(curl --silent --show-error --fail-with-body -X POST \
+            "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/apis?name=${PROXY_NAME}&action=import" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
+            -H "Content-Type: multipart/form-data" \
+            -F "file=@apiproxy.zip")
+
+          echo "Import API response: ${RESPONSE}"
+          REVISION=$(echo "${RESPONSE}" | jq -r '.revision')
+
+          if [ -z "${REVISION}" ] || [ "${REVISION}" = "null" ]; then
+            echo "Error: Failed to retrieve revision number from response."
+            exit 1
+          fi
+
+          echo "Successfully imported revision: ${REVISION}"
+          echo "revision=${REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Revision to Environment
+        run: |
+          REVISION="${{ steps.import_proxy.outputs.revision }}"
+          echo "Deploying revision ${REVISION} to environment ${APIGEE_ENV} in org ${APIGEE_ORG}..."
+
+          DEPLOY_RESPONSE=$(curl --silent --show-error --fail-with-body -X POST \
+            "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/apis/${PROXY_NAME}/revisions/${REVISION}/deployments?override=true" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}" \
+            -H "Content-Type: application/json")
+
+          echo "Deployment response: ${DEPLOY_RESPONSE}"
+
+      - name: Wait for Deployment to be Ready
+        run: |
+          REVISION="${{ steps.import_proxy.outputs.revision }}"
+          echo "Waiting for deployment of revision ${REVISION} to be READY..."
+
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            STATUS_RESPONSE=$(curl --silent -X GET \
+              "https://apigee.googleapis.com/v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/apis/${PROXY_NAME}/revisions/${REVISION}/deployments" \
+              -H "Authorization: Bearer ${{ steps.auth.outputs.access_token }}")
+
+            STATE=$(echo "${STATUS_RESPONSE}" | jq -r '.state // empty')
+            echo "Attempt $((ATTEMPT+1))/${MAX_ATTEMPTS}: Current state is '${STATE}'"
+
+            if [ "${STATE}" = "READY" ]; then
+              echo "Deployment is READY!"
+              exit 0
+            elif [ "${STATE}" = "ERROR" ]; then
+              echo "Deployment failed with error state:"
+              echo "${STATUS_RESPONSE}" | jq .
+              exit 1
+            fi
+
+            ATTEMPT=$((ATTEMPT+1))
+            sleep 5
+          done
+
+          echo "Warning: Deployment did not reach READY within timeout. Current status:"
+          echo "${STATUS_RESPONSE}"
