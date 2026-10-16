@@ -57,27 +57,83 @@ apigee-cicd-demo/
 
 ---
 
+## Workload Identity Federation (WIF) & Security Hardening
+
+In traditional CI/CD setups, integrating GitHub Actions with Google Cloud relies on **downloadable Service Account JSON keys** stored as static repository secrets (`GCP_SA_KEY`). 
+
+However, static service account keys introduce major security liabilities:
+- **Credential leakage risks**: Keys stored long-term in GitHub Secrets, CI logs, or developer machines can be compromised or exfiltrated.
+- **No automatic rotation**: Keys rarely get rotated regularly, increasing exposure time.
+- **Enterprise restrictions**: Enterprise GCP organizations routinely enforce the constraint `constraints/iam.disableServiceAccountKeyCreation`, which strictly blocks the creation of service account keys.
+
+### How Workload Identity Federation Works
+
+Workload Identity Federation eliminates service account keys entirely by establishing a federated trust relationship between **GitHub Actions (OIDC Provider)** and **Google Cloud IAM (Security Token Service - STS)**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GHA as GitHub Actions Runner
+    participant GHOIDC as GitHub OIDC Token Service
+    participant GCPSTS as GCP Security Token Service (STS)
+    participant GCPIAM as GCP IAM Service Account
+    participant Apigee as Apigee X Management API
+
+    GHA->>GHOIDC: 1. Request signed OIDC JWT token (with repo & actor claims)
+    GHOIDC-->>GHA: 2. Return short-lived GitHub JWT token
+    GHA->>GCPSTS: 3. Exchange JWT token with WIF Provider
+    Note over GCPSTS: Validates signature against token.actions.githubusercontent.com<br/>Checks assertion.repository == 'JoelGauci/apigee-cicd-demo'
+    GCPSTS-->>GHA: 4. Return federated federated STS token
+    GHA->>GCPIAM: 5. Impersonate apigee-deployer-sa using STS token
+    GCPIAM-->>GHA: 6. Return short-lived Google OAuth2 Access Token (valid <= 1h)
+    GHA->>Apigee: 7. Deploy API Proxy using OAuth2 Access Token
+```
+
+### Security Benefits of WIF
+
+1. **Keyless Authentication (Zero Secrets)**
+   - No sensitive JSON credentials are created, downloaded, or persisted in GitHub repository secrets or local filesystems.
+   - Eliminates secret management overhead, rotation lifecycles, and risk of accidental git commits.
+
+2. **Strict Attribute Mapping & Scoping**
+   - The Workload Identity Provider enforces attribute conditions:
+     ```text
+     assertion.repository == 'JoelGauci/apigee-cicd-demo'
+     ```
+   - Only jobs executed within this exact GitHub repository can exchange tokens. Forks, unauthorized branches, or external repositories cannot impersonate the service account.
+
+3. **Short-Lived Ephemeral Tokens**
+   - Tokens issued by GCP STS are temporary access tokens valid only for the duration of the deployment step (typically 1 hour or less).
+   - In the event of a runner memory capture, the token quickly expires, severely limiting the blast radius.
+
+4. **Enhanced Auditability & Compliance**
+   - Every deployment request recorded in Google Cloud Audit Logs contains metadata from the GitHub OIDC assertion (e.g. `workflow`, `actor`, `ref`, and `repository`).
+   - Fully satisfies CIS Google Cloud Platform Benchmarks and enterprise Zero Trust security policies (`constraints/iam.disableServiceAccountKeyCreation`).
+
+---
+
 ## Setup & GitHub Integration Guide (Step 1)
 
-### 1. Workload Identity Federation (WIF) Configuration
-
-Authentication is completely keyless using Workload Identity Federation:
+### 1. Workload Identity Federation (WIF) Configuration Details
 
 - **GCP Project**: `apigee-x-jog` (Project Number: `1014194238001`)
 - **Service Account**: `apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com`
+- **WIF Pool**: `github-pool`
 - **WIF Provider**: `projects/1014194238001/locations/global/workloadIdentityPools/github-pool/providers/github-provider`
 
-Required IAM roles on `apigee-deployer-sa`:
-- `roles/apigee.admin`
-- `roles/iam.workloadIdentityUser` bound to GitHub repo `JoelGauci/apigee-cicd-demo`
+Required IAM roles configured on `apigee-deployer-sa`:
+- `roles/apigee.admin` (Apigee management and deployment privileges)
+- `roles/iam.workloadIdentityUser` bound to `principalSet://.../attribute.repository/JoelGauci/apigee-cicd-demo`
 
-### 2. Commit and Push to Trigger the Pipeline
+### 2. Workflow Trigger & Push
 
-No GitHub Secrets need to be created. Commit and push the workflow to GitHub:
+The workflow is located in [`.github/workflows/deploy.yml`](file://.github/workflows/deploy.yml).
+
+To push and run the pipeline:
 ```bash
 git add .github/ .gitignore README.md
-git commit -m "feat: configure Apigee deployment pipeline with Workload Identity Federation"
+git commit -m "docs: document Workload Identity Federation and security hardening"
 git push origin main
 ```
 
-The workflow will automatically trigger on push to `main` when `apiproxy/**` or workflow files change. You can also trigger it manually from the **Actions** tab in GitHub (**Run workflow**).
+The pipeline will automatically authenticate keylessly via WIF, package the `apiproxy` bundle, import the revision into Apigee X, and deploy it to the `prod` environment.
