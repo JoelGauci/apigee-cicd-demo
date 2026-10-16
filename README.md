@@ -36,7 +36,7 @@ flowchart TD
 | **Step 2** | **Completed** | Secret Manager provisioning script & KVM synchronization (`apigee_secrets` / `secret_demo`) |
 | **Step 3** | **Completed** | Apickli BDD integration test suite setup |
 | **Step 4** | **Completed** | Integration of BDD tests into the CI/CD pipeline |
-| **Step 5** | *Pending* | End-to-end execution, validation, and final wrap-up |
+| **Step 5** | **Completed** | End-to-end execution, validation, and final wrap-up |
 
 ---
 

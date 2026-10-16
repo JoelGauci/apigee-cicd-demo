@@ -19,6 +19,7 @@
   </PostFlow>
   <Flows/>
   <HTTPProxyConnection>
+    <!-- base path definition -->
     <BasePath>/mock/v1</BasePath>
     <Properties/>
   </HTTPProxyConnection>
