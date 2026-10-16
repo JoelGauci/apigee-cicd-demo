@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<APIProxy revision="1" name="apigee-cicd-v1">
+  <DisplayName/>
+  <Description/>
+  <CreatedAt>1792137159947</CreatedAt>
+  <LastModifiedAt>1792137406004</LastModifiedAt>
+  <BasePaths>/mock/v1</BasePaths>
+  <Policies>
+    <Policy>KVM-GetSecret</Policy>
+  </Policies>
+  <ProxyEndpoints>
+    <ProxyEndpoint>default</ProxyEndpoint>
+  </ProxyEndpoints>
+  <TargetEndpoints>
+    <TargetEndpoint>default</TargetEndpoint>
+  </TargetEndpoints>
+</APIProxy>
