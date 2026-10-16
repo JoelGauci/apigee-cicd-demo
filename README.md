@@ -12,16 +12,17 @@ flowchart TD
     subgraph CI/CD [GitHub Actions Pipeline]
         Auth[1. Authenticate via Workload Identity Federation]
         FetchSecret[2. Fetch Secret from GCP Secret Manager]
-        SyncKVM[3. Check & Synchronize Apigee KVM & Key Entry]
+        SyncKVM[3. Synchronize Apigee KVM & Key Entry]
         Package[4. Package apiproxy bundle]
         Import[5. Import API Proxy Revision]
         Deploy[6. Deploy Revision to Environment]
         Wait[7. Wait until State is READY]
+        Test[8. Run Apickli BDD Integration Tests]
     end
     GitHub --> CI/CD
     CI/CD -->|gcloud secrets versions access| GSM[(GCP Secret Manager)]
     CI/CD -->|Apigee Management API| Apigee[(Apigee X Org: apigee-x-jog / Env: prod)]
-    Apigee -->|Runtime KVM Read| Proxy[API Proxy: apigee-cicd-v1]
+    Test -->|HTTPS Request to 34.54.8.132.nip.io| Apigee
 ```
 
 ---
@@ -33,8 +34,8 @@ flowchart TD
 | **Step 0** | **Completed** | Project workspace initialization & documentation baseline |
 | **Step 1** | **Completed** | GitHub Actions pipeline for Apigee API proxy deployment on push (using WIF) |
 | **Step 2** | **Completed** | Secret Manager provisioning script & KVM synchronization (`apigee_secrets` / `secret_demo`) |
-| **Step 3** | *Pending* | Apickli BDD integration test suite setup |
-| **Step 4** | *Pending* | Integration of BDD tests into the CI/CD pipeline |
+| **Step 3** | **Completed** | Apickli BDD integration test suite setup |
+| **Step 4** | **Completed** | Integration of BDD tests into the CI/CD pipeline |
 | **Step 5** | *Pending* | End-to-end execution, validation, and final wrap-up |
 
 ---
@@ -45,8 +46,8 @@ flowchart TD
 apigee-cicd-demo/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml      # CI/CD deployment pipeline with Secret Manager & KVM sync
-├── apiproxy/               # Apigee API Proxy source code (apigee-cicd-v1)
+│       └── deploy.yml              # CI/CD deployment pipeline with Secret Manager, KVM sync & BDD tests
+├── apiproxy/                       # Apigee API Proxy source code (apigee-cicd-v1)
 │   ├── apigee-cicd-v1.xml
 │   ├── policies/
 │   │   └── KVM-GetSecret.xml
@@ -55,9 +56,19 @@ apigee-cicd-demo/
 │   └── targets/
 │       └── default.xml
 ├── scripts/
-│   └── create_secret.sh    # Shell script to create GCP secret and grant CI/CD access
-├── tests/                  # Apickli BDD test suite
-└── README.md               # Project documentation
+│   ├── cleanup.sh                  # Cleanup script to delete Apigee proxy, KVM, and Secret
+│   └── create_secret.sh            # Shell script to create GCP secret and grant CI/CD access
+├── test/                           # Apickli BDD test suite
+│   ├── integration/
+│   │   └── features/
+│   │       ├── apigee-cicd.feature # BDD feature file testing x-demo-secret
+│   │       ├── step_definitions/
+│   │       │   └── steps.js        # Step definitions asserting response code and secret header
+│   │       └── support/
+│   │           └── init.js         # Apickli initialization (APIGEE_HOSTNAME & DEMO_SECRET)
+│   └── package.json                # Test dependencies (@cucumber/cucumber, apickli)
+├── package.json                    # Root package.json
+└── README.md                       # Project documentation
 ```
 
 ---
@@ -93,7 +104,8 @@ sequenceDiagram
     GHA->>GCPIAM: 5. Impersonate apigee-deployer-sa using STS token
     GCPIAM-->>GHA: 6. Return short-lived Google OAuth2 Access Token
     GHA->>GSM: 7. Access secret version (secret_demo)
-    GHA->>Apigee: 8. Sync KVM entry (apigee_secrets / secret_demo) & Deploy proxy
+    GHA->>Apigee: 8. Sync KVM entry & Deploy proxy
+    GHA->>Apigee: 9. Run Apickli BDD test and assert x-demo-secret header
 ```
 
 ### Security Benefits of WIF
@@ -116,7 +128,7 @@ Run the helper script [`scripts/create_secret.sh`](file:///usr/local/google/home
 ./scripts/create_secret.sh
 
 # Or specify custom secret name and value:
-./scripts/create_secret.sh "secret_demo" "MySecureSecretValue2026!"
+./scripts/create_secret.sh "secret_demo" "MySecuredSecretDemo2026!"
 ```
 
 The script performs the following actions:
@@ -132,23 +144,55 @@ During each CI/CD execution:
 2. **Log Masking**: The value is registered with `::add-mask::` so that it will never appear in GitHub Actions console logs.
 3. **KVM Creation**: The pipeline queries `GET /v1/organizations/apigee-x-jog/environments/prod/keyvaluemaps/apigee_secrets`. If it does not exist (HTTP 404), it creates the encrypted KVM.
 4. **Key Entry Upsert**: The pipeline queries `GET .../keyvaluemaps/apigee_secrets/entries/secret_demo`. If present, it sends a `PUT` request to update the value; if absent, it sends a `POST` request to create the entry.
-5. **Proxy Execution**: At runtime, the policy [`KVM-GetSecret.xml`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/apiproxy/policies/KVM-GetSecret.xml) retrieves the value from `apigee_secrets` under key `secret_demo` and populates `private.flow.secret`.
+5. **Proxy Execution**: At runtime, the policy [`KVM-GetSecret.xml`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/apiproxy/policies/KVM-GetSecret.xml) retrieves the value from `apigee_secrets` under key `secret_demo`.
 
 ---
 
-## How to Test and Deploy Step 2
+## Steps 3 & 4: Apickli BDD Integration Testing
 
-1. Execute the secret creation script locally:
-   ```bash
-   ./scripts/create_secret.sh secret_demo "MySuperSecretValue123!"
-   ```
-2. Commit and push the changes:
-   ```bash
-   git add scripts/create_secret.sh .github/workflows/deploy.yml README.md
-   git commit -m "feat: add Secret Manager script and KVM sync to CI/CD pipeline"
-   git push origin main
-   ```
-3. Watch the workflow execution in GitHub Actions:
-   - Check the `Fetch Secret from Secret Manager` step output.
-   - Check the `Synchronize Apigee KVM & Secret Entry` step output.
-   - Confirm proxy deployment.
+The BDD integration test suite uses [Apickli](https://github.com/apickli/apickli) and [Cucumber.js](https://cucumber.io/) following the structure recommended by `apigee/devrel`.
+
+### 1. Feature Specification ([`test/integration/features/apigee-cicd.feature`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/test/integration/features/apigee-cicd.feature))
+
+```gherkin
+Feature: Apigee CI/CD Demo - API Proxy Integration Tests
+
+  Scenario: Verify API proxy deployment and KVM secret injection
+    When I GET /mock/v1/echo
+    Then response code should be 200
+    And response body should be valid json
+    And response header x-demo-secret should exist
+    And response header x-demo-secret should be `DEMO_SECRET`
+```
+
+### 2. Assertion Logic ([`test/integration/features/step_definitions/steps.js`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/test/integration/features/step_definitions/steps.js))
+
+The test step `response header x-demo-secret should be `DEMO_SECRET`` verifies:
+- That `x-demo-secret` is present (either in the HTTP response headers or echoed by `/echo` in `headers.x-demo-secret`).
+- That its value matches the exact secret retrieved from GCP Secret Manager during pipeline execution.
+
+### 3. Running Tests Locally
+
+```bash
+cd test
+npm install
+export APIGEE_HOSTNAME="34.54.8.132.nip.io"
+export DEMO_SECRET="MySecuredSecretDemo2026!"
+npm test
+```
+
+---
+
+## Environment Cleanup
+
+To delete all resources provisioned during this demo, run the cleanup script:
+
+```bash
+./scripts/cleanup.sh
+```
+
+This script will:
+1. Undeploy any deployed revisions of `apigee-cicd-v1` from environment `prod`.
+2. Delete the API Proxy `apigee-cicd-v1` from organization `apigee-x-jog`.
+3. Delete the KVM `apigee_secrets` from environment `prod`.
+4. Delete the secret `secret_demo` from Google Cloud Secret Manager.

@@ -1,0 +1,12 @@
+{
+  "name": "apigee-cicd-demo-tests",
+  "version": "1.0.0",
+  "description": "Apickli BDD integration tests for Apigee CI/CD Demo",
+  "scripts": {
+    "test": "cucumber-js integration/features/ --exit"
+  },
+  "dependencies": {
+    "@cucumber/cucumber": "^8.11.0",
+    "apickli": "^3.0.3"
+  }
+}

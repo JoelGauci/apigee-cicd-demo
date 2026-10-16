@@ -7,6 +7,9 @@
       <Step>
         <Name>KVM-GetSecret</Name>
       </Step>
+      <Step>
+        <Name>AM-SetSecretAsHeader</Name>
+      </Step>
     </Request>
     <Response/>
   </PreFlow>

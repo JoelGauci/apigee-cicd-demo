@@ -1,0 +1,8 @@
+{
+  "name": "apigee-cicd-demo",
+  "version": "1.0.0",
+  "description": "Apigee CI/CD Demo with Secret Manager, KVM, and Apickli BDD tests",
+  "scripts": {
+    "test": "cd test && npm test"
+  }
+}

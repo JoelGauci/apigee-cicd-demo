@@ -8,6 +8,7 @@ on:
       - 'apiproxy/**'
       - '.github/workflows/**'
       - 'scripts/**'
+      - 'test/**'
   workflow_dispatch:
 
 permissions:
@@ -18,6 +19,7 @@ env:
   GCP_PROJECT: apigee-x-jog
   APIGEE_ORG: apigee-x-jog
   APIGEE_ENV: prod
+  APIGEE_HOSTNAME: 34.54.8.132.nip.io
   PROXY_NAME: apigee-cicd-v1
   KVM_NAME: apigee_secrets
   KVM_KEY: secret_demo
@@ -27,7 +29,7 @@ env:
 
 jobs:
   deploy:
-    name: Deploy to Apigee X
+    name: Deploy to Apigee X & Run Integration Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -174,3 +176,21 @@ jobs:
 
           echo "Warning: Deployment did not reach READY within timeout. Current status:"
           echo "${STATUS_RESPONSE}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Test Dependencies
+        run: |
+          cd test
+          npm install
+
+      - name: Run Apickli BDD Integration Tests
+        env:
+          APIGEE_HOSTNAME: ${{ env.APIGEE_HOSTNAME }}
+          DEMO_SECRET: ${{ steps.fetch_secret.outputs.secret_value }}
+        run: |
+          cd test
+          npm test
