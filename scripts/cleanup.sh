@@ -96,17 +96,17 @@ fi
 # ------------------------------------------------------------------------------
 # 3. Delete Secret Manager Secret
 # ------------------------------------------------------------------------------
-echo ""
-echo "[3/3] Cleaning up GCP Secret Manager secret '${SECRET_NAME}'..."
+#echo ""
+#echo "[3/3] Cleaning up GCP Secret Manager secret '${SECRET_NAME}'..."
 
-if gcloud secrets describe "${SECRET_NAME}" --project="${GCP_PROJECT}" >/dev/null 2>&1; then
-  gcloud secrets delete "${SECRET_NAME}" \
-    --project="${GCP_PROJECT}" \
-    --quiet
-  echo "  Secret '${SECRET_NAME}' deleted successfully from Secret Manager."
-else
-  echo "  Secret '${SECRET_NAME}' does not exist in project '${GCP_PROJECT}'. Nothing to delete."
-fi
+#if gcloud secrets describe "${SECRET_NAME}" --project="${GCP_PROJECT}" >/dev/null 2>&1; then
+#  gcloud secrets delete "${SECRET_NAME}" \
+#    --project="${GCP_PROJECT}" \
+#    --quiet
+#  echo "  Secret '${SECRET_NAME}' deleted successfully from Secret Manager."
+#else
+#  echo "  Secret '${SECRET_NAME}' does not exist in project '${GCP_PROJECT}'. Nothing to delete."
+#fi
 
 echo ""
 echo "============================================================"
