@@ -3,6 +3,7 @@
   <Description/>
   <FaultRules/>
   <PreFlow name="PreFlow">
+  <!-- execute some policies -->
     <Request>
       <Step>
         <Name>KVM-GetSecret</Name>
