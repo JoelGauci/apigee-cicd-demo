@@ -17,5 +17,7 @@ sa-key.json
 .DS_Store
 *.env
 .env.*
+!.env
+!.env.example
 *.swp
 *~

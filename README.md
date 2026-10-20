@@ -21,22 +21,9 @@ flowchart TD
     end
     GitHub --> CI/CD
     CI/CD -->|gcloud secrets versions access| GSM[(GCP Secret Manager)]
-    CI/CD -->|Apigee Management API| Apigee[(Apigee X Org: apigee-x-jog / Env: prod)]
-    Test -->|HTTPS Request to 34.54.8.132.nip.io| Apigee
+    CI/CD -->|Apigee Management API| Apigee[(Apigee X Org: $APIGEE_ORG / Env: $APIGEE_ENV)]
+    Test -->|HTTPS Request to $APIGEE_HOSTNAME| Apigee
 ```
-
----
-
-## Project Roadmap
-
-| Step | Status | Description |
-| :--- | :---: | :--- |
-| **Step 0** | **Completed** | Project workspace initialization & documentation baseline |
-| **Step 1** | **Completed** | GitHub Actions pipeline for Apigee API proxy deployment on push (using WIF) |
-| **Step 2** | **Completed** | Secret Manager provisioning script & KVM synchronization (`apigee_secrets` / `secret_demo`) |
-| **Step 3** | **Completed** | Apickli BDD integration test suite setup |
-| **Step 4** | **Completed** | Integration of BDD tests into the CI/CD pipeline |
-| **Step 5** | **Completed** | End-to-end execution, validation, and final wrap-up |
 
 ---
 
@@ -47,6 +34,9 @@ apigee-cicd-demo/
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml              # CI/CD deployment pipeline with Secret Manager, KVM sync & BDD tests
+├── .env                            # Environment variables file (key=value)
+├── .env.example                    # Template environment variables file
+├── env.sh                          # Centralized environment script (exports to shell & GITHUB_ENV)
 ├── apiproxy/                       # Apigee API Proxy source code (apigee-cicd-v1)
 │   ├── apigee-cicd-v1.xml
 │   ├── policies/
@@ -69,6 +59,32 @@ apigee-cicd-demo/
 │   └── package.json                # Test dependencies (@cucumber/cucumber, apickli)
 ├── package.json                    # Root package.json
 └── README.md                       # Project documentation
+```
+
+---
+
+## Environment Configuration
+
+All environment variables and infrastructure parameters are centralized in [`env.sh`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/env.sh) and [`.env`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/.env) (with template [`.env.example`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/.env.example)). No project IDs, hostnames, or service accounts are hardcoded in the deployment pipeline.
+
+| Variable | Description |
+| :--- | :--- |
+| `GCP_PROJECT` | Google Cloud Project ID |
+| `APIGEE_ORG` | Apigee Organization name |
+| `APIGEE_ENV` | Apigee Environment name (e.g. `eval`, `prod`) |
+| `APIGEE_HOSTNAME` | Hostname / Ingress IP domain for API traffic |
+| `PROXY_NAME` | Apigee API Proxy name |
+| `KVM_NAME` | Apigee Key-Value Map name |
+| `KVM_KEY` | Entry key inside the KVM |
+| `SECRET_NAME` | GCP Secret Manager secret name |
+| `WIF_PROVIDER` | Workload Identity Federation provider resource name |
+| `WIF_SERVICE_ACCOUNT`| Google Cloud Service Account email used by CI/CD |
+
+To configure your environment:
+```bash
+cp .env.example .env
+# Edit .env with your specific infrastructure values
+source env.sh
 ```
 
 ---
@@ -99,11 +115,11 @@ sequenceDiagram
     GHA->>GHOIDC: 1. Request signed OIDC JWT token (repo & actor claims)
     GHOIDC-->>GHA: 2. Return short-lived GitHub JWT token
     GHA->>GCPSTS: 3. Exchange JWT token with WIF Provider
-    Note over GCPSTS: Validates against token.actions.githubusercontent.com<br/>Checks assertion.repository == 'JoelGauci/apigee-cicd-demo'
+    Note over GCPSTS: Validates against token.actions.githubusercontent.com<br/>Checks assertion.repository == '<YOUR_GITHUB_REPO>'
     GCPSTS-->>GHA: 4. Return federated STS token
-    GHA->>GCPIAM: 5. Impersonate apigee-deployer-sa using STS token
+    GHA->>GCPIAM: 5. Impersonate $WIF_SERVICE_ACCOUNT using STS token
     GCPIAM-->>GHA: 6. Return short-lived Google OAuth2 Access Token
-    GHA->>GSM: 7. Access secret version (secret_demo)
+    GHA->>GSM: 7. Access secret version ($SECRET_NAME)
     GHA->>Apigee: 8. Sync KVM entry & Deploy proxy
     GHA->>Apigee: 9. Run Apickli BDD test and assert x-demo-secret header
 ```
@@ -111,44 +127,44 @@ sequenceDiagram
 ### Security Benefits of WIF
 
 1. **Keyless Authentication (Zero Secrets)**: No static credentials stored in GitHub Secrets or disk.
-2. **Strict Attribute Mapping & Scoping**: Only repository `JoelGauci/apigee-cicd-demo` can authenticate.
+2. **Strict Attribute Mapping & Scoping**: Only the configured GitHub repository can authenticate.
 3. **Short-Lived Ephemeral Tokens**: Temporary tokens valid $\le$ 1 hour minimize the attack surface.
 4. **Enhanced Auditability & Compliance**: Full traceability in Google Cloud Audit Logs.
 
 ---
 
-## Step 2: Secret Manager & KVM Synchronization
+## Secret Manager & KVM Synchronization
 
 ### 1. Provision Secret in GCP Secret Manager
 
 Run the helper script [`scripts/create_secret.sh`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/scripts/create_secret.sh) from your local terminal:
 
 ```bash
-# Basic usage (uses default secret name 'secret_demo')
+# Basic usage (uses values from env.sh / .env)
 ./scripts/create_secret.sh
 
 # Or specify custom secret name and value:
-./scripts/create_secret.sh "secret_demo" "MySecuredSecretDemo2026!"
+./scripts/create_secret.sh "custom_secret_name" "MySecuredSecretValue!"
 ```
 
 The script performs the following actions:
 1. Enables the `secretmanager.googleapis.com` API if not yet enabled.
-2. Creates the secret `secret_demo` with automatic replication.
+2. Creates the secret `${SECRET_NAME}` with automatic replication.
 3. Adds a new version containing the secret value.
-4. Grants `roles/secretmanager.secretAccessor` on the secret to the Service Account `apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com`.
+4. Grants `roles/secretmanager.secretAccessor` on the secret to the Service Account `${WIF_SERVICE_ACCOUNT}`.
 
 ### 2. CI/CD Pipeline KVM Synchronization
 
 During each CI/CD execution:
-1. **Secret Retrieval**: The pipeline fetches the latest version of `secret_demo` from Secret Manager using `gcloud secrets versions access`.
+1. **Secret Retrieval**: The pipeline fetches the latest version of `${SECRET_NAME}` from Secret Manager using `gcloud secrets versions access`.
 2. **Log Masking**: The value is registered with `::add-mask::` so that it will never appear in GitHub Actions console logs.
-3. **KVM Creation**: The pipeline queries `GET /v1/organizations/apigee-x-jog/environments/prod/keyvaluemaps/apigee_secrets`. If it does not exist (HTTP 404), it creates the encrypted KVM.
-4. **Key Entry Upsert**: The pipeline queries `GET .../keyvaluemaps/apigee_secrets/entries/secret_demo`. If present, it sends a `PUT` request to update the value; if absent, it sends a `POST` request to create the entry.
-5. **Proxy Execution**: At runtime, the policy [`KVM-GetSecret.xml`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/apiproxy/policies/KVM-GetSecret.xml) retrieves the value from `apigee_secrets` under key `secret_demo`.
+3. **KVM Creation**: The pipeline queries `GET /v1/organizations/${APIGEE_ORG}/environments/${APIGEE_ENV}/keyvaluemaps/${KVM_NAME}`. If it does not exist (HTTP 404), it creates the encrypted KVM.
+4. **Key Entry Upsert**: The pipeline queries `GET .../keyvaluemaps/${KVM_NAME}/entries/${KVM_KEY}`. If present, it sends a `PUT` request to update the value; if absent, it sends a `POST` request to create the entry.
+5. **Proxy Execution**: At runtime, the policy [`KVM-GetSecret.xml`](file:///usr/local/google/home/joelgauci/repo/apigee-cicd-demo/apiproxy/policies/KVM-GetSecret.xml) retrieves the value from `${KVM_NAME}` under key `${KVM_KEY}`.
 
 ---
 
-## Steps 3 & 4: Apickli BDD Integration Testing
+## Apickli BDD Integration Testing
 
 The BDD integration test suite uses [Apickli](https://github.com/apickli/apickli) and [Cucumber.js](https://cucumber.io/) following the structure recommended by `apigee/devrel`.
 
@@ -176,8 +192,8 @@ The test step `response header x-demo-secret should be `DEMO_SECRET`` verifies:
 ```bash
 cd test
 npm install
-export APIGEE_HOSTNAME="34.54.8.132.nip.io"
-export DEMO_SECRET="MySecuredSecretDemo2026!"
+source ../env.sh
+export DEMO_SECRET="MyLocalSecretValue!"
 npm test
 ```
 
@@ -192,7 +208,7 @@ To delete all resources provisioned during this demo, run the cleanup script:
 ```
 
 This script will:
-1. Undeploy any deployed revisions of `apigee-cicd-v1` from environment `prod`.
-2. Delete the API Proxy `apigee-cicd-v1` from organization `apigee-x-jog`.
-3. Delete the KVM `apigee_secrets` from environment `prod`.
-4. Delete the secret `secret_demo` from Google Cloud Secret Manager.
+1. Undeploy any deployed revisions of `${PROXY_NAME}` from environment `${APIGEE_ENV}`.
+2. Delete the API Proxy `${PROXY_NAME}` from organization `${APIGEE_ORG}`.
+3. Delete the KVM `${KVM_NAME}` from environment `${APIGEE_ENV}`.
+4. Delete the secret `${SECRET_NAME}` from Google Cloud Secret Manager.

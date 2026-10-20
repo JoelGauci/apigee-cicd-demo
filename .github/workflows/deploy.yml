@@ -9,23 +9,13 @@ on:
       - '.github/workflows/**'
       - 'scripts/**'
       - 'test/**'
+      - 'env.sh'
+      - '.env'
   workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write
-
-env:
-  GCP_PROJECT: apigee-x-jog
-  APIGEE_ORG: apigee-x-jog
-  APIGEE_ENV: prod
-  APIGEE_HOSTNAME: 34.54.8.132.nip.io
-  PROXY_NAME: apigee-cicd-v1
-  KVM_NAME: apigee_secrets
-  KVM_KEY: secret_demo
-  SECRET_NAME: secret_demo
-  WIF_PROVIDER: projects/1014194238001/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-  WIF_SERVICE_ACCOUNT: apigee-deployer-sa@apigee-x-jog.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -34,6 +24,11 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Load Environment Variables
+        run: |
+          chmod +x ./env.sh
+          ./env.sh
 
       - name: Authenticate to Google Cloud
         id: auth
@@ -150,7 +145,8 @@ jobs:
           REVISION="${{ steps.import_proxy.outputs.revision }}"
           echo "Waiting for deployment of revision ${REVISION} to be READY..."
 
-          MAX_ATTEMPTS=30
+          MAX_ATTEMPTS="${DEPLOYMENT_MAX_ATTEMPTS:-30}"
+          DELAY_SECONDS="${DEPLOYMENT_DELAY_SECONDS:-5}"
           ATTEMPT=0
 
           while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -171,7 +167,7 @@ jobs:
             fi
 
             ATTEMPT=$((ATTEMPT+1))
-            sleep 5
+            sleep "${DELAY_SECONDS}"
           done
 
           echo "Warning: Deployment did not reach READY within timeout. Current status:"
@@ -180,7 +176,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Run Apickli BDD Integration Tests
         env:

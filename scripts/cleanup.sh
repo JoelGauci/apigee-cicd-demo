@@ -9,6 +9,14 @@
 
 set -uo pipefail
 
+# Source centralized environment variables if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${ROOT_DIR}/env.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/env.sh"
+fi
+
 # Configuration defaults
 GCP_PROJECT="${GCP_PROJECT:-apigee-x-jog}"
 APIGEE_ORG="${APIGEE_ORG:-apigee-x-jog}"

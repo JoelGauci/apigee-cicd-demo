@@ -7,11 +7,19 @@
 
 set -euo pipefail
 
+# Source centralized environment variables if available
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [ -f "${ROOT_DIR}/env.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/env.sh"
+fi
+
 # Configuration defaults (can be overridden by environment variables or CLI arguments)
 GCP_PROJECT="${GCP_PROJECT:-apigee-x-jog}"
-SECRET_NAME="${1:-secret_demo}"
+SECRET_NAME="${1:-${SECRET_NAME:-secret_demo}}"
 SECRET_VALUE="${2:-DemoSecretValueFromSecretManager2026!}"
-SA_EMAIL="${SA_EMAIL:-apigee-deployer-sa@${GCP_PROJECT}.iam.gserviceaccount.com}"
+SA_EMAIL="${SA_EMAIL:-${WIF_SERVICE_ACCOUNT:-apigee-deployer-sa@${GCP_PROJECT}.iam.gserviceaccount.com}}"
 
 echo "============================================================"
 echo " Google Cloud Secret Manager Provisioning"
